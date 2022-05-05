@@ -16,3 +16,18 @@
 10. `bootminix()`は、OSからブートモニターに戻ると(たとえば、ユーザーがminix shutdownコマンドを発行した場合に)復帰する。
 
 rawfs.cは、ファイルシステム操作の小さなサブセットである。たとえば、ディスクからブロックを読み取ったり、ファイルに関する情報を見つけたり、ディレクトリの内容を読み取ったり、パス名をiノード番号に変換したりできる。
+
+# masterboot.s
+
+![](./bios_mb_load.drawio.png)
+
+のように、起動ディスクの最初のセクタをLOADOFFアドレスにロードし実行する。マスターブートブロックコードは自身をBUFFER領域にコピーする。アドレスの定義は以下
+
+```Unix Assembly
+	LOADOFF	   =	0x7C00	! 0x0000:LOADOFF is where this code is loaded
+	BUFFER	   =	0x0600	! First free memory
+	PART_TABLE =	   446	! Location of partition table within this code
+	PENTRYSIZE =	    16	! Size of one partition table entry
+	MAGIC	   =	   510	! Location of the AA55 magic number
+```
+
