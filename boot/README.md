@@ -420,3 +420,189 @@ done:
 ```
 
 読み込みが完了したら、es:siにパーティションテーブルのエントリをセットし直して、bootプログラムの(ヘッダ部分をスキップして)コード部分へジャンプ。
+
+## boothead.s
+
+```
+	jmpf	boot, LOADSEG+3	! Set cs right (skipping long a.out header)
+	.space	11		! jmpf + 11 = 16 bytes
+	jmpf	boot, LOADSEG+2	! Set cs right (skipping short a.out header)
+```
+
+bootblock.sの最後で、`jmpf	BOOTOFF, BOOTSEG` によって、bootプログラムの0x30バイト目にジャンプしている。bootプログラムのヘッダ部分は、48バイト(0x30)、または、32バイト(0x20)の場合がある。48バイトのヘッダの場合は最初の`jmpf	boot, LOADSEG+3`へ、32バイトの場合は2つ目の`jmpf	boot, LOADSEG+2`に到達する。最終的には、`boot`ラベルへジャンプするようにしている。
+
+```
+boot:
+	mov	ax, #LOADSEG
+	mov	ds, ax		! ds = header
+```
+
+dsをヘッダの位置に設定する。
+
+```
+	movb	al, a_flags
+	testb	al, #A_SEP	! Separate I&D?
+	jnz	sepID
+```
+
+ヘッダ部のa_flagsを調べて条件分岐、MINIX 3のデフォルトはI&Dは分離されている。
+
+```
+sepID:
+	mov	ax, a_total	! Total nontext memory usage
+	and	ax, #0xFFFE	! Round down to even
+	mov	a_total, ax	! total - text = data + bss + heap + stack
+```
+
+a_totalを2バイトアライメントをとる。
+
+```
+	cli			! Ignore interrupts while stack in limbo
+	mov	sp, ax		! Set sp at the top of all that
+```
+
+スタックポインタ(sp)をメモリの最後尾に設定
+
+```
+	mov	ax, a_text	! Determine offset of ds above cs
+	movb	cl, #4
+	shr	ax, cl
+```
+
+a_textサイズをセグメントの単位に変換。
+
+```
+	mov	cx, cs
+	add	ax, cx
+	mov	ds, ax		! ds = cs + text / 16
+```
+
+データセグメントの開始位置をテキストセグメントの後に設定
+
+```
+	mov	ss, ax
+	sti			! Stack ok now
+```
+
+スタックセグメントの開始位置をdsと同じにする。
+
+```
+	push	es		! Save es, we need it for the partition table
+	mov	es, ax
+	cld			! C compiler wants UP
+
+! Clear bss
+	xor	ax, ax		! Zero
+	mov	di, #_edata	! Start of bss is at end of data
+	mov	cx, #_end	! End of bss (begin of heap)
+	sub	cx, di		! Number of bss bytes
+	shr	cx, #1		! Number of words
+	rep
+	stos			! Clear bss
+```
+
+esを退避してから、bssの初期化を行う。es:diからcxカウントだけax(=0)を代入している。
+
+```
+! Copy primary boot parameters to variables.  (Can do this now that bss is
+! cleared and may be written into).
+	xorb	dh, dh
+	mov	_device, dx	! Boot device (probably 0x00 or 0x80)
+	mov	_rem_part+0, si	! Remote partition table offset
+	pop	_rem_part+2	! and segment (saved es)
+```
+
+起動パラメータをbssにコピー。
+
+```
+! Remember the current video mode for restoration on exit.
+	movb	ah, #0x0F	! Get current video mode
+	int	0x10
+	andb	al, #0x7F	! Mask off bit 7 (no blanking)
+	movb	old_vid_mode, al
+	movb	cur_vid_mode, al
+```
+
+現在のビデオモードを調べて保存。
+
+```
+! Give C code access to the code segment, data segment and the size of this
+! process.
+	xor	ax, ax
+	mov	dx, cs
+	call	seg2abs
+	mov	_caddr+0, ax
+	mov	_caddr+2, dx
+	xor	ax, ax
+	mov	dx, ds
+	call	seg2abs
+	mov	_daddr+0, ax
+	mov	_daddr+2, dx
+	push	ds
+	mov	ax, #LOADSEG
+	mov	ds, ax		! Back to the header once more
+	mov	ax, a_total+0
+	mov	dx, a_total+2	! dx:ax = data + bss + heap + stack
+	add	ax, a_text+0
+	adc	dx, a_text+2	! dx:ax = text + data + bss + heap + stack
+	pop	ds
+	mov	_runsize+0, ax
+	mov	_runsize+2, dx	! 32 bit size of this process
+```
+
+C言語のコードから、コードセグメント開始アドレス(_caddr)、データセグメント開始アドレス(_daddr)、プロセスのサイズ(_runsize)をアクセスできるようにする。
+boot.hにて、caddr、daddr、runsizeは定義されている。
+
+```
+! Determine available memory as a list of (base,size) pairs as follows:
+! mem[0] = low memory, mem[1] = memory between 1M and 16M, mem[2] = memory
+! above 16M.  Last two coalesced into mem[1] if adjacent.
+	mov	di, #_mem	! di = memory list
+	int	0x12		! Returns low memory size (in K) in ax
+	mul	c1024
+	mov	4(di), ax	! mem[0].size = low memory size in bytes
+	mov	6(di), dx
+	call	_getprocessor
+	cmp	ax, #286	! Only 286s and above have extended memory
+	jb	no_ext
+	cmp	ax, #486	! Assume 486s were the first to have >64M
+	jb	small_ext	! (It helps to be paranoid when using the BIOS)
+big_ext:
+	mov	ax, #0xE801	! Code for get memory size for >64M
+	int	0x15		! ax = mem at 1M per 1K, bx = mem at 16M per 64K
+	jnc	got_ext
+! 略
+got_ext:
+	mov	cx, ax		! cx = copy of ext mem at 1M
+	mov	10(di), #0x0010	! mem[1].base = 0x00100000 (1M)
+	mul	c1024
+	mov	12(di), ax	! mem[1].size = "ext mem at 1M" * 1024
+	mov	14(di), dx
+	test	bx, bx
+	jz	no_ext		! No more ext mem above 16M?
+	cmp	cx, #15*1024	! Chunks adjacent? (precisely 15M at 1M?)
+	je	adj_ext
+	mov	18(di), #0x0100	! mem[2].base = 0x01000000 (16M)
+	mov	22(di), bx	! mem[2].size = "ext mem at 16M" * 64K
+	jmp	no_ext
+adj_ext:
+	add	14(di), bx	! Add ext mem above 16M to mem below 16M
+no_ext:
+```
+
+boot.hのmemにメモリの情報をセットする。
+int 0x12は、axレジスタにメモリサイズをKiB単位でセットする。
+int 0x15は、axレジスタに1MiBのアドレスからのメモリサイズをKiB単位で、bxレジスタに16MiBのアドレスからのメモリサイズを64KiB単位でセットする。
+
+`c1024`は1024の即値。
+
+* mem[0]は、0x0000から開始されるメモリの開始アドレスとサイズ
+* mem[1]は、0x0010_0000(1MiB)から開始されるメモリのアドレスとサイズ
+* mem[2]は、0x0100_0000(16MiB)から開始されるメモリのアドレスと、64KiBのチャンク数
+
+```
+! Time to switch to a higher level language (not much higher)
+	call	_boot
+```
+
+C言語で書かれたboot(boot.cにある)を呼び出す。
