@@ -598,7 +598,7 @@ int 0x15は、axレジスタに1MiBのアドレスからのメモリサイズを
 
 `c1024`は1024の即値。
 
-* mem[0]は、0x0000から開始されるメモリの開始アドレスとサイズ
+* mem[0]は、0x0000から開始されるメモリの開始アドレスとサイズ(通常640KiB)
 * mem[1]は、0x0010_0000(1MiB)から開始されるメモリのアドレスとサイズ
 * mem[2]は、0x0100_0000(16MiB)から開始されるメモリのアドレスと、64KiBのチャンク数
 
@@ -608,3 +608,124 @@ int 0x15は、axレジスタに1MiBのアドレスからのメモリサイズを
 ```
 
 C言語で書かれたboot(boot.cにある)を呼び出す。
+
+## boot.c
+
+最初にアセンブラのコードからboot()が呼び出される。
+
+### boot(void)
+
+```c
+void boot(void)
+/* Load Minix and start it, among other things. */
+{
+
+	/* Initialize tables. */
+	initialize();
+
+	/* Get environment variables from the parameter sector. */
+	get_parameters();
+
+	while (1) {
+		/* While there are commands, execute them! */
+
+		while (cmds != nil) execute();
+
+		/* The "monitor" is just a "read one command" thing. */
+		monitor();
+	}
+}
+```
+
+boot()は以下の処理を行う。
+
+1. `initialize()`関数を呼び出し初期化をする。
+2. `get_parameters()`パラメータセクタ(ブートストラップの次のセクタ)からパラメータを読み込む。
+3. パラメータにあるコマンドを`execute()`を呼び出して実行(OSの起動も含む)する。
+4. OSが終了したら、`monitor()`を呼び出し、プロンプト(`d0p0s0> `等)を出力してコマンドを読み込む。
+
+### initialize(void)
+
+initialize()は以下の処理を行う。
+
+1. ブートモニタを低メモリ(mem[0])の上端に移動する。低メモリとは通常640KiB未満のメモリのことだ。
+2. カーネルに渡されるメモリマップからブートモニターを削除する。これにより、カーネルはブートモニターが占有するメモリを割り当てることができなくなる。
+3. bootdevを初期化する。
+
+**ブートモニタの移動**
+
+```c
+	/* Copy the boot program to the far end of low memory, this must be
+	 * done to get out of the way of Minix, and to put the data area
+	 * cleanly inside a 64K chunk if using BIOS I/O (no DMA problems).
+	 */
+	u32_t oldaddr= caddr;
+	u32_t memend= mem[0].base + mem[0].size;
+	u32_t newaddr= (memend - runsize) & ~0x0000FL;
+```
+
+`(memend - runsize)`でコピー先の末尾が640KiBになるように仮の開始アドレスを計算する。`~0x0000FL`は`0xFFFFFFF0L`であり、論理積を取ってセグメントの16バイトアライメントを取っている。
+
+```c
+#if !DOS
+	u32_t dma64k= (memend - 1) & ~0x0FFFFL;
+
+
+	/* Check if data segment crosses a 64K boundary. */
+	if (newaddr + (daddr - caddr) < dma64k) newaddr= dma64k - runsize;
+#endif
+```
+
+データセグメントが64KiBバウンダリをまたぐ場合は再調整する。
+
+```c
+	/* Set the new caddr for relocate. */
+	caddr= newaddr;
+
+	/* Copy code and data. */
+	raw_copy(newaddr, oldaddr, runsize);
+```
+
+`raw_copy()`(アセンブラで定義)を呼び出して、コードを低メモリの上端にコピーする。
+
+```c
+	/* Make the copy running. */
+	relocate();
+```
+
+`relocate()`(アセンブラで定義)を呼び出して、コピー先で続きを実行する。
+
+**カーネルに渡されるメモリマップからブートモニターを削除**
+
+```c
+	if (mon_return = (mem[1].size > 512*1024L)) mem[0].size = newaddr;
+```
+
+拡張メモリがある場合、つまり`(mem[1].size > 512*1024L)`の場合は、mem[0]からブートモニタのメモリの領域を除く。
+
+```c
+	mem[0].base += 2048;
+	mem[0].size -= 2048;
+```
+
+BIOS割込みベクタや、BIOSのデータ領域、および古いカーネルのヘッダ領域のために、開始アドレスを2KiBずらす。
+
+**bootdevを初期化する**
+
+```c
+	/* Find out what the boot device and partition was. */
+	bootdev.name[0]= 0;
+	bootdev.device= device;
+	bootdev.primary= -1;
+	bootdev.secondary= -1;
+```
+
+で初期化しておいて、`get_master(master, table, masterpos)`の結果を使って値を設定していく。
+
+```c
+	raw_copy(mon2abs(&lowsec),
+		vec2abs(&rem_part) + offsetof(struct part_entry, lowsec),
+		sizeof(lowsec));
+```
+
+他にも、アクティブパーティションの開始セクタをC言語の領域にコピーする。(`rem_part`はアクティブパーティションのパーティションテーブルのエントリ位置。lowsecはパーティションの開始セクタ)
