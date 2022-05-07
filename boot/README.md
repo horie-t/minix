@@ -729,3 +729,46 @@ BIOS割込みベクタや、BIOSのデータ領域、および古いカーネル
 ```
 
 他にも、アクティブパーティションの開始セクタをC言語の領域にコピーする。(`rem_part`はアクティブパーティションのパーティションテーブルのエントリ位置。lowsecはパーティションの開始セクタ)
+
+## get_parameters(void)
+
+```c
+// 略
+	b_setvar(E_SPECIAL|E_VAR|E_DEV, "rootdev", "ram");
+// 略
+	/* Default hidden menu function: */
+	b_setenv(E_RESERVED|E_FUNCTION, null, "=,Start MINIX", "boot");
+```
+
+のように、変数、環境変数を設定し、
+
+```c
+	if ((r= readsectors(mon2abs(params), lowsec+PARAMSEC, 1)) != 0) {
+```
+
+アクティブパーティションの2番目のセクタから起動用のコマンド文字列を取得する。
+
+```c
+	acmds= tokenize(&cmds, params);
+// 略
+	(void) tokenize(acmds, ":;leader;main");
+```
+
+コマンド文字列は、`tokenize()`でトークン化され、`cmds`にリンクリストで追加される。
+
+## execute(void)
+
+`cmd`にコマンドがある時は`execute()`が呼ばれ、コマンドが実行される。
+
+```c
+	name= cmds->token;
+	res= reserved(name);
+```
+で、`token`が"boot"の場合、`R_BOOT`がresに代入される。
+
+```c
+		switch (res) {
+		case R_BOOT:	bootminix();	ok= 1;	break;
+```
+
+`R_BOOT`の場合に`bootminix()`(bootimage.cにある方。このファイルにある方ではないので注意)が呼ばれ、MINIXが起動する。
