@@ -772,3 +772,32 @@ BIOS割込みベクタや、BIOSのデータ領域、および古いカーネル
 ```
 
 `R_BOOT`の場合に`bootminix()`(bootimage.cにある方。このファイルにある方ではないので注意)が呼ばれ、MINIXが起動する。
+
+## bootimage.c
+
+### bootminix(void)
+
+```c
+	if ((image= select_image(b_value("image"))) == nil) return;
+
+	exec_image(image);
+```
+
+1. `select_image()`でファイルシステム上のカーネルイメージを探し、グローバル変数`curfil`にそのiノードの情報を保存する。
+2. `exec_image()`で、OSのカーネルイメージを読み込み、`minix()`を呼んでプロテクトモードへ移行し、カーネルへジャンプする。
+
+### select_image(char *image)
+
+```c
+	fsok= r_super(&block_size) != 0;
+	if (!fsok || (image_ino= r_lookup(ROOT_INO, image)) == 0) {
+// 略
+	}
+
+	r_stat(image_ino, &st);
+// 略	
+	vir2sec= file_vir2sec;
+	image_size= (st.st_size + SECTOR_SIZE - 1) >> SECTOR_SHIFT;
+```
+
+`r_lookup()`で`image`で指定されたカーネルイメージのiノードを探索しグローバル変数`curfil`にiノードをセットしている。`vir2sec`はファイル内のセクタから実際のハードディスク上のセクタ位置に変換する関数をここで決定している。これらは、次の`exec_image()`で使用される。
