@@ -801,3 +801,103 @@ BIOS割込みベクタや、BIOSのデータ領域、および古いカーネル
 ```
 
 `r_lookup()`で`image`で指定されたカーネルイメージのiノードを探索しグローバル変数`curfil`にiノードをセットしている。`vir2sec`はファイル内のセクタから実際のハードディスク上のセクタ位置に変換する関数をここで決定している。これらは、次の`exec_image()`で使用される。
+
+### exec_image(char *image)
+
+起動処理手順の中で最も難しいものの1つなので大変。
+
+```c
+	addr= mem[0].base;		/* Into this memory block. */
+	limit= mem[0].base + mem[0].size;
+	if (limit > caddr) limit= caddr;
+```
+
+addrはイメージファイルの読み込み先、limitは読み込み上限(ブートモニタの直前まで)となっている。
+
+
+```c
+	/* Allocate and clear the area where the headers will be placed. */
+	aout = (limit -= PROCESS_MAX * A_MINHDR);
+
+	/* Clear the area where the headers will be placed. */
+	raw_clear(aout, PROCESS_MAX * A_MINHDR);
+```
+
+カーネルイメージ・ファイルのヘッダは、読み込み領域の上限(ブートモニタの直前)付近に読み込む事になっており、領域をクリアする。
+
+```c
+	/* Read the many different processes: */
+	for (i= 0; vsec < image_size; i++) {
+```
+
+`for`で1プロセス毎に読み込んでいる。
+
+```c
+			if ((buf= get_sector(vsec++)) == nil) return;
+
+			memcpy(&hdr, buf, sizeof(hdr));
+// 略
+		raw_copy(aout + i * A_MINHDR, mon2abs(&hdr.process), A_MINHDR);
+
+```
+
+ヘッダのセクタを読み込んで`image_header`構造体にセットしチェックをした後、ヘッダ領域へコピー。
+
+```c
+		a_text= hdr.process.a_text;
+		a_data= hdr.process.a_data;
+		a_bss= hdr.process.a_bss;
+// 略
+		/* Read the data segment. */
+		if (!get_segment(&vsec, &a_data, &addr, limit)) return;
+// 略
+		if (hdr.process.a_flags & A_SEP) {
+			/* Read the text segment. */
+			if (!get_segment(&vsec, &a_text, &addr, limit)) return;
+// 略
+		/* Read the data segment. */
+		if (!get_segment(&vsec, &a_data, &addr, limit)) return;
+// 略
+		/* Zero out bss. */
+		if (addr + n > limit) { errno= ENOMEM; return; }
+		raw_clear(addr, n);
+// 略
+		/* And the number of stack clicks. */
+		a_stack+= a_bss;
+		n= align(a_stack, click_size);
+		a_stack-= n;
+
+		/* Add space for the stack. */
+		addr+= n;
+```
+
+ヘッダからプログラムの各領域のサイズを取得して、その後ファイルのフォーマット等に応じてアライメントを取る。アライメントを取った後で、
+
+1. text(dataセグメントと分離している場合)セグメント、dataセグメントを読み込む。
+2. bssをゼロクリア。
+3. スタック領域を確保。
+
+```c
+		if (i == 0 && (k_flags & K_HIGH)) {
+			/* Load the rest in extended memory. */
+			addr= mem[1].base;
+			limit= mem[1].base + mem[1].size;
+		}
+```
+
+最初のカーネル以外は、拡張メモリ領域(1MiB以上の領域)にコピーするように設定。
+
+```c
+	/* Patch sizes, etc. into kernel data. */
+	patch_sizes();
+```
+
+カーネル関連のサイズを修正する(パッチをあてる)。
+
+```c
+	/* Minix. */
+	minix(process[KERNEL].entry, process[KERNEL].cs,
+			process[KERNEL].ds, params, sizeof(params), aout);
+```
+
+環境変数の設定等をした後で、`minix()`を呼び出しOSを起動する。OSが終了するまでここには戻らない。
