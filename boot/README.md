@@ -901,3 +901,254 @@ addrはイメージファイルの読み込み先、limitは読み込み上限(�
 ```
 
 環境変数の設定等をした後で、`minix()`を呼び出しOSを起動する。OSが終了するまでここには戻らない。
+
+## boothead.s(2回目)
+
+ここでは、bootimage.cから呼ばれる部分について記述する。
+
+### _minix
+
+```
+! void minix(u32_t koff, u32_t kcs, u32_t kds,
+!				char *bootparams, size_t paramsize, u32_t aout);
+!	Call Minix.
+_minix:
+	push	bp
+	mov	bp, sp		! Pointer to arguments
+```
+
+引数を後で使うために、スタックの位置をbpへセット。
+
+```
+	mov	dx, #0x03F2	! Floppy motor drive control bits
+	movb	al, #0x0C	! Bits 4-7 for floppy 0-3 are off
+	outb	dx		! Kill the motors
+	push	ds
+	xor	ax, ax		! Vector & BIOS data segments
+	mov	ds, ax
+	andb	0x043F, #0xF0	! Clear diskette motor status bits of BIOS
+	pop	ds
+	cli			! No more interruptions
+
+	test	_k_flags, #K_I386 ! Switch to 386 mode?
+	jnz	minix386
+```
+
+フロッピーディスクを停止して、`minix386`にジャンプする。
+
+### minix386
+
+カーネル用にスタック、ds、esを設定し、リアルモードからプロテクトモードへ移行する。
+
+リアルモードからプロテクトモードへの移行の処理は以下のように行う。
+
+1. セグメントの設定
+   1. グローバルディスクリプタテーブル(GDT)の作成
+   2. GDTRの設定
+2. 割込みの設定
+   1. 割込みディスクリプタテーブルの設定
+   2. IDTRの設定
+3. アドレスバス A20ビットマスク解除
+4. プロテクトモードへの移行
+   1. CR0のPEビットをセット
+   2. セグメントレジスタの再設定
+
+```
+! Call Minix in 386 mode.
+minix386:
+  cseg	mov	cs_real-2, cs	! Patch CS and DS into the instructions that
+  cseg	mov	ds_real-2, ds	! reload them when switching back to real mode
+```
+
+リアルモードに戻ったときのために現在のcs、dsの値で、OSが終了してリアルモードへ戻るコードを書き換える。書き換え先は以下のようになっている。
+
+```
+	jmpf	cs_real, 0xDEAD	! Reload cs register
+cs_real:
+	mov	ax, #0xBEEF
+ds_real:
+	mov	ds, ax		! Reload data segment registers
+```
+
+`0xDEAD`と`#0xBEEF`が書き換えられる事になる。「DEAD BEEF」の意味については[WikipediaのHexspeak](https://ja.wikipedia.org/wiki/Hexspeak)を参照。
+
+```
+	.data1	0x0F,0x20,0xC0	! mov	eax, cr0
+```
+
+`mov	eax, cr0`と直接書きたいのだが、cr0はアセンブラではサポートされていないので、機械語のコードを直接書いている。cr0は、CPUの制御レジスタ。
+
+```
+	orb	al, #0x01	! Set PE (protection enable) bit
+	.data1	o32
+	mov	msw, ax		! Save as protected mode machine status word
+```
+`#0x01`と論理和を取って、プロテクトモードを有効にした値を設定する。`mov	msw, ax`の頭に`o32`をつけると、`mov msw, eax`と解釈され、cr0の内容をmswに保存しておく(MINIX起動直前にcr0に設定する)。
+
+```
+	mov	dx, ds		! Monitor ds
+	mov	ax, #p_gdt	! dx:ax = Global descriptor table
+	call	seg2abs
+	mov	p_gdt_desc+2, ax
+	movb	p_gdt_desc+4, dl ! Set base of global descriptor table
+```
+
+ここからしばらくは、プロテクトモードのためにグローバルディスクリプタテーブルを設定する。設定先のメモリは以下のような初期状態になっていて、UNSETの部分がここで書き換えられる。
+
+```
+p_gdt_desc:
+	! Descriptor for this descriptor table
+	.data2	8*8-1, UNSET
+	.data1	UNSET, 0x00, 0x00, 0x00
+```
+
+```
+	push	#MCS_SELECTOR
+	test	_k_flags, #K_INT86 ! Generic INT86 support?
+	jz	0f
+	push	#int86		! Far address to INT86 support
+	jmp	1f
+0:	push	#bios13		! Far address to BIOS int 13 support
+1:
+	test	_k_flags, #K_MEML ! New memory arrangements?
+	jz	0f
+	.data1	o32
+	push	20(bp)		! Address of a.out headers
+0:
+	push	#0
+	push	18(bp)		! 32 bit size of parameters on stack
+	push	#0
+	push	16(bp)		! 32 bit address of parameters (ss relative)
+
+	test	_k_flags, #K_RET ! Can the kernel return?
+	jz	noret386
+	push	#MCS_SELECTOR
+	push	#ret386		! Monitor far return address
+```
+
+カーネルが呼ばれたときに期待しているスタックを作成している。
+
+```
+	push	#0
+	push	#CS_SELECTOR
+	push	6(bp)
+	push	4(bp)		! 32 bit far address to kernel entry point
+```
+
+の部分は、あとに出てくる以下のretfでpopされる事になる。(retfでリターンしているように見えるけど実際はここでセットしたカーネルのエントリポイントにジャンプしている)
+
+```
+	.data1	o32		! Make a far call to the kernel
+	retf
+```
+
+```
+	call	real2prot	! Switch to protected mode
+```
+
+リアルモードからプロテクトモードに移行する。 `real2prot`は後述。
+
+```
+	mov	ax, #DS_SELECTOR ! Kernel data
+	mov	ds, ax
+	mov	ax, #ES_SELECTOR ! Flat 4 Gb
+	mov	es, ax
+```
+
+カーネル用のセグメントを設定する。
+
+```
+	.data1	o32		! Make a far call to the kernel
+	retf
+```
+
+先程見たようにカーネルを呼び出ししている。
+
+### real2prot
+
+```
+! Switch from real to protected mode.
+real2prot:
+	movb	ah, #0x02	! Code for A20 enable
+	call	gate_A20
+```
+
+`gate_A20`(後述)を呼び出して、20ビット以上のアドレスを有効にする。
+
+```
+	lgdt	p_gdt_desc	! Global descriptor table
+```
+
+グローバルディスクリプタ(GDT)のアドレスを、グローバルディスクリプタ・レジスタ(GDTR)に設定(ロード)する。
+
+```
+	.data1	o32
+	mov	ax, pdbr	! Load page directory base register
+	.data1	0x0F,0x22,0xD8	! mov	cr3, eax
+```
+
+ページング用のデータのベースアドレスをコントロールレジスタ`cr3`にセットする。
+
+```
+	.data1	0x0F,0x20,0xC0	! mov	eax, cr0
+	.data1	o32
+	xchg	ax, msw		! Exchange real mode msw for protected mode msw
+	.data1	0x0F,0x22,0xC0	! mov	cr0, eax
+```
+
+前に作成した値でコントロールレジスタ`cr0`をセットしてプロテクトモード(32ビットモード)に移行する。
+
+```
+	jmpf	cs_prot, MCS_SELECTOR ! Set code segment selector
+cs_prot:
+```
+
+CPUのパイプライン処理で先読みされている命令をクリアするためにジャンプをする。(先読みされている命令はリアルモード(16ビットモード)の命令として解釈されてるので、ここ移行は改めて32ビット命令として取り込み直す)
+
+```
+	mov	ax, #SS_SELECTOR ! Set data selectors
+	mov	ds, ax
+	mov	es, ax
+	mov	ss, ax
+	ret
+```
+
+### gate_A20
+
+メモリ空間の制御なのに、キーボード・コントローラに信号を送っている。当時空いていたポートがキーボードコントローラにあったからというのが理由だそうである。
+
+```
+! Enable (ah = 0x02) or disable (ah = 0x00) the A20 address line.
+gate_A20:
+	cmp	bus, #2		! PS/2 bus?
+	je	gate_PS_A20
+	call	kb_wait
+	movb	al, #0xD1	! Tell keyboard that a command is coming
+	outb	0x64
+	call	kb_wait
+	movb	al, #0xDD	! 0xDD = A20 disable code if ah = 0x00
+	orb	al, ah		! 0xDF = A20 enable code if ah = 0x02
+	outb	0x60
+	call	kb_wait
+	movb	al, #0xFF	! Pulse output port
+	outb	0x64
+	call	kb_wait		! Wait for the A20 line to settle down
+	ret
+kb_wait:
+	inb	0x64
+	testb	al, #0x02	! Keyboard input buffer full?
+	jnz	kb_wait		! If so, wait
+	ret
+
+gate_PS_A20:		! The PS/2 can twiddle A20 using port A
+	inb	0x92		! Read port A
+	andb	al, #0xFD
+	orb	al, ah		! Set A20 bit to the required state
+	outb	0x92		! Write port A
+	jmp	.+2		! Small delay
+A20ok:	inb	0x92		! Check port A
+	andb	al, #0x02
+	cmpb	al, ah		! A20 line settled down to the new state?
+	jne	A20ok		! If not then wait
+	ret
+```
