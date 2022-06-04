@@ -456,10 +456,15 @@ sepID:
 	mov	a_total, ax	! total - text = data + bss + heap + stack
 ```
 
-a_totalを2バイトアライメントをとる。
+a_totalを2バイトアライメントをとる。a_totalはI&D分離時は(data + bss + heap + stack)のサイズ。
 
 ```
 	cli			! Ignore interrupts while stack in limbo
+```
+
+sp, ssを設定する時は割込み禁止する。
+
+```
 	mov	sp, ax		! Set sp at the top of all that
 ```
 
@@ -486,7 +491,7 @@ a_textサイズをセグメントの単位に変換。
 	sti			! Stack ok now
 ```
 
-スタックセグメントの開始位置をdsと同じにする。
+スタックセグメントの開始位置をdsと同じにする。ssを設定し終わったので、割込みを許可する。
 
 ```
 	push	es		! Save es, we need it for the partition table
