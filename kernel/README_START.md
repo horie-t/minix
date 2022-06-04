@@ -1,8 +1,8 @@
 # カーネルの初期化と開始について
 
-ブートモニタからは、minix386.sのMINIX:にジャンプしてくる。
+ブートモニタからは、mpx386.sのMINIX:にジャンプしてくる。
 
-```
+```Assembly
 MINIX:				! this is the entry point for the MINIX kernel
 	jmp	over_flags	! skip over the next few bytes
 	.data2	CLICK_SHIFT	! for the monitor: memory granularity
@@ -18,13 +18,13 @@ over_flags:
 
 ひとまず、フラグデータの部分を飛び越える。このflagsはブートモニタの`get_clickshift()`で参照されるのでカーネルでは不要。この場所にあるのは単純にアドレス指定ができるから。
 
-```
+```Assembly
 	movzx	esp, sp		! monitor stack is a 16 bit stack
 ```
 
 スタックポインタを16ビットから32ビットに変換する。(zxをつけてゼロ拡張(Zero eXtend)している)
 
-```
+```Assembly
 ! Copy the monitor global descriptor table to the address space of kernel and
 ! switch over to it.  Prot_init() can then update it with immediate effect.
 
@@ -42,7 +42,7 @@ copygdt:
 
 モニタのメモリ領域にあるGDTを、カーネル側の領域にコピー。
 
-```
+```Assembly
 	mov	eax, (_gdt+DS_SELECTOR+2)	! base of kernel data
 	and	eax, 0x00FFFFFF			! only 24 bits
 	add	eax, _gdt			! eax = vir2phys(gdt)
@@ -53,7 +53,7 @@ copygdt:
 コピーしたカーネル側のGDTに切り替え。
 
 
-```
+```Assembly
 ! Locate boot parameters, set up kernel segment registers and stack.
 	mov	ebx, 8(ebp)	! boot parameters offset
 	mov	edx, 12(ebp)	! boot parameters length
@@ -61,14 +61,14 @@ copygdt:
 
 引数をレジスタに一旦コピー、`cstart`を呼ぶ直前にスタックに積み直す。
 
-```
+```Assembly
 	mov	eax, 16(ebp)	! address of a.out headers
 	mov	(_aout), eax
 ```
 
 a.outのヘッダ情報のアドレスをカーネル側の領域にコピー。
 
-```
+```Assembly
 	mov	ax, ds		! kernel data
 	mov	es, ax
 	mov	fs, ax
@@ -78,13 +78,13 @@ a.outのヘッダ情報のアドレスをカーネル側の領域にコピー。
 
 セグメント・セレクタを変更。
 
-```
+```Assembly
 	mov	esp, k_stktop	! set sp to point to the top of kernel stack
 ```
 
 スタック領域をカーネル用のメモリ領域に変更。
 
-```
+```Assembly
 ! Call C startup code to set up a proper environment to run main().
 	push	edx
 	push	ebx
@@ -106,14 +106,14 @@ cstartの引数をスタックに積んでから、cstartを呼び出す。
 
 # minix386.s
 
-```
+```Assembly
 	call	_cstart		! cstart(cs, ds, mds, parmoff, parmlen)
 	add	esp, 5*4
 ```
 
 cstartから戻ったら、呼び出し前にスタックに積んだ引数を無視するようにスタックポインタを調整する。
 
-```
+```Assembly
 ! Reload gdtr, idtr and the segment registers to global descriptor table set
 ! up by prot_init().
 
@@ -126,7 +126,7 @@ csinit:
 
 `prot_init()`で設定したグローバルディスクリプタテーブル、割込みディスクリプタテーブルを読み込んで有効化する。有効化後にジャンプして強制的に使用させる。
 
-```
+```Assembly
     o16	mov	ax, DS_SELECTOR
 	mov	ds, ax
 	mov	es, ax
@@ -136,21 +136,21 @@ csinit:
 ```
 セグメント・セレクタを設定。
 
-```
+```Assembly
     o16	mov	ax, TSS_SELECTOR	! no other TSS is used
 	ltr	ax
 ```
 
 `ltr`(Load Task Register)でタスクレジスタにロードする。
 
-```
+```Assembly
 	push	0			! set flags to known good state
 	popf				! esp, clear nested task and int enable
 ```
 
 `popf`でスタックのトップをEFLAGSの下位16ビットにポップしている。つまり0に設定している。
 
-```
+```Assembly
 	jmp	_main			! main()
 ```
 
@@ -467,7 +467,7 @@ T, D, Sは以下のように定義。
 
 ## _restart
 
-```
+```Assembly
 _restart:
 
 ! Restart the current process or the next process if it is set. 
@@ -478,7 +478,7 @@ _restart:
 
 `next_ptr`は`main()`から呼ばれた`lock_enqueue()`の処理の中で設定されているので、ジャンプしない。
 
-```
+```Assembly
 	mov 	eax, (_next_ptr)
 	mov	(_proc_ptr), eax	! schedule new process 
 	mov	(_next_ptr), 0
@@ -486,7 +486,7 @@ _restart:
 
 実行するプロセスの情報を設定。
 
-```
+```Assembly
 0:	mov	esp, (_proc_ptr)	! will assume P_STACKBASE == 0
 	lldt	P_LDT_SEL(esp)		! enable process' segment descriptors 
 	lea	eax, P_STACKTOP(esp)	! arrange for next interrupt
@@ -495,13 +495,13 @@ _restart:
 
 コンテキストスイッチを起こすための準備、詳細は後日、調べる。
 
-```
+```Assembly
 restart1:
 	decb	(_k_reenter)
 ```
 カーネルのリエントリのカウントを減らす。
 
-```
+```Assembly
     o16	pop	gs
     o16	pop	fs
     o16	pop	es
@@ -512,4 +512,3 @@ restart1:
 ```
 
 退避していたレジスタをもとに戻し(いつpushした？)、キューに入ったプロセスを開始する。
-
