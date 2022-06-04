@@ -19,10 +19,30 @@ over_flags:
 ひとまず、フラグデータの部分を飛び越える。このflagsはブートモニタの`get_clickshift()`で参照されるのでカーネルでは不要。この場所にあるのは単純にアドレス指定ができるから。
 
 ```Assembly
+! Set up a C stack frame on the monitor stack.  (The monitor sets cs and ds
+! right.  The ss descriptor still references the monitor data segment.)
 	movzx	esp, sp		! monitor stack is a 16 bit stack
 ```
 
 スタックポインタを16ビットから32ビットに変換する。(zxをつけてゼロ拡張(Zero eXtend)している)
+
+```Assembly
+	push	ebp
+	mov	ebp, esp
+	push	esi
+	push	edi
+```
+
+ebp, esi, ediを退避。(TODO: いつpopしている？後で、カーネルのスタックに切り替えるので、ブートモニタに戻ってからっぽい。)
+
+```Assembly
+	cmp	4(ebp), 0	! monitor return vector is
+	jz	noret		! nonzero if return possible
+	inc	(_mon_return)
+noret:	mov	(_mon_sp), esp	! save stack pointer for later return
+```
+
+ブートモニタに戻れるかどうかのフラグを設定し、戻ったときのスタックポインタを保存。
 
 ```Assembly
 ! Copy the monitor global descriptor table to the address space of kernel and
@@ -59,7 +79,7 @@ copygdt:
 	mov	edx, 12(ebp)	! boot parameters length
 ```
 
-引数をレジスタに一旦コピー、`cstart`を呼ぶ直前にスタックに積み直す。
+引数をレジスタに一旦コピー、`cstart`を呼ぶ直前にカーネル用のスタックに積み直す事になる。
 
 ```Assembly
 	mov	eax, 16(ebp)	! address of a.out headers
@@ -200,7 +220,7 @@ PUBLIC void main()
    * モニターによってサーバーのスタックがデータセグメントに追加さ
    * れているため、スタックポインターはデータセグメントの末尾に
    * 設定される。
-   * 8086では、すべてのプロセスのメモリが不足している。
+   * 8086では、すべてのプロセスの低位メモリにある。
    * 386ではカーネルだけが低位メモリにあり、残りは拡張メモリに
    * ロードされる。
    */
@@ -308,12 +328,19 @@ HRD_Sはカーネルプロセス(ハードウェアプロセスとも呼ぶ)は�
 ```c
 	ip = &image[i];				/* process' attributes */
 // ...
+	/* Set initial register values.  The processor status word for tasks 
+	 * is different from that of other processes because tasks can
+	 * access I/O; this is not allowed to less-privileged processes 
+	 */
+	rp->p_reg.pc = (reg_t) ip->initial_pc;
+	rp->p_reg.psw = (iskernelp(rp)) ? INIT_TASK_PSW : INIT_PSW;
+// ...
 	} else {
 		hdrindex = 1 + i-NR_TASKS;	/* servers, drivers, INIT */
 	}
 ```
 
-まずは以下のimage配列からカーネルのプロセス情報を取ってきてプロセスを設定。
+まずは以下のimage配列からカーネルのプロセス情報を取ってきてプロセスを設定。そして一部のレジスタの値を初期化する。
 
 ```c
   /* システムイメージテーブルには、ブートイメージに含まれるすべてのプログラムが一覧表示される。
@@ -488,6 +515,41 @@ _restart:
 
 ```Assembly
 0:	mov	esp, (_proc_ptr)	! will assume P_STACKBASE == 0
+```
+
+スタックポインタを設定。ポイントしている先の中身は以下の通り
+
+```c
+struct proc {
+  struct stackframe_s p_reg;	/* process' registers saved in stack frame */
+// ...
+}
+// ...
+struct stackframe_s {           /* proc_ptr points here */
+#if _WORD_SIZE == 4
+  u16_t gs;                     /* last item pushed by save */
+  u16_t fs;                     /*  ^ */
+#endif
+  u16_t es;                     /*  | */
+  u16_t ds;                     /*  | */
+  reg_t di;			/* di through cx are not accessed in C */
+  reg_t si;			/* order is to match pusha/popa */
+  reg_t fp;			/* bp */
+  reg_t st;			/* hole for another copy of sp */
+  reg_t bx;                     /*  | */
+  reg_t dx;                     /*  | */
+  reg_t cx;                     /*  | */
+  reg_t retreg;			/* ax and above are all pushed by save */
+  reg_t retadr;			/* return address for assembly code save() */
+  reg_t pc;			/*  ^  last item pushed by interrupt */
+  reg_t cs;                     /*  | */
+  reg_t psw;                    /*  | */
+  reg_t sp;                     /*  | */
+  reg_t ss;                     /* these are pushed by CPU during interrupt */
+};
+```
+
+```Assembly
 	lldt	P_LDT_SEL(esp)		! enable process' segment descriptors 
 	lea	eax, P_STACKTOP(esp)	! arrange for next interrupt
 	mov	(_tss+TSS3_S_SP0), eax	! to save state in process table
@@ -511,4 +573,4 @@ restart1:
 	iretd			! continue process
 ```
 
-退避していたレジスタをもとに戻し(いつpushした？)、キューに入ったプロセスを開始する。
+`mov	esp, (_proc_ptr)`で設定しておいたスタックからレジスタを設定し、キューに入ったプロセスを開始する。
