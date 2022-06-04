@@ -27,7 +27,7 @@ rawfs.cは、ファイルシステム操作の小さなサブセットである�
 
 のように、起動ディスクの最初のセクタをLOADOFFアドレスにロードし実行する。マスターブートブロックコードは自身をBUFFER領域にコピーする。アドレスの定義は以下
 
-```Unix Assembly
+```Assembly
 	LOADOFF	   =	0x7C00	! 0x0000:LOADOFF is where this code is loaded
 	BUFFER	   =	0x0600	! First free memory
 	PART_TABLE =	   446	! Location of partition table within this code
@@ -37,7 +37,7 @@ rawfs.cは、ファイルシステム操作の小さなサブセットである�
 
 これから、コードを見ていきます。
 
-```Unix Assembly
+```Assembly
 ! Find active (sub)partition, load its first sector, run it.
 
 master:
@@ -48,13 +48,13 @@ master:
 
 第1オペランドのレジスタ(ax)と第2オペランド(ax)とで排他的論理和をとって、第1オペランド(ax)に結果を格納します。自分自身(ax)と排他的論理和は必ずゼロになるので、axレジスタをゼロにします (それ自身とxorされた数字はすべて0です) 。これはかなり一般的なテクニックです。
 
-```
+```Assembly
 mov ax,#0
 ```
 
 だと、xorの2バイトに比べて遅く、3バイトを消費する機械語になってしまう。その後、ds, esのセグメントレジスタを0にします。
 
-```
+```Assembly
 	cli
 	mov	ss, ax			! ds = es = ss = Vector segment
 	mov	sp, #LOADOFF
@@ -64,7 +64,7 @@ mov ax,#0
 スタックセグメントレジスタ (ss) またはスタックポインター (sp) に値をmovする場合は、最初に割り込みを無効にする必要がある。ssおよびspレジスタは、割り込みが完了した後に戻るアドレスを保持する。もしssレジスタとspレジスタが変動している間に割り込まれた場合、コードが戻る場所は不定である。
 割り込みはcli (clear interrupts) 命令で無効になり、sti (set interrupts) 命令で再度有効になる。
 
-```
+```Assembly
 ! Copy this code to safety, then jump to it.
 	mov	si, sp			! si = start of this code
 	push	si			! Also where we'll return to eventually
@@ -79,14 +79,14 @@ rep movs命令は、cxワードをds:si(これは0:LOADOFF)からes:di(これは
 
 cld (clear direction flag) は、rep movs命令が0:LOADOFFから0:LOADFF-512までのバイトではなく、0:LOADOFFから0:LOADOFF+512までのバイトをコピーすることを指定する。前者が必要な場合は、cldの代わりにstd (set direction flag) を使用する。
 
-```
+```Assembly
 	jmpf	BUFFER+migrate, 0	! To safety
 migrate:
 ```
 
 jmpf(far jump)は、セグメント0、オフセットBUFFER+migrateにジャンプする。よって、コピー先の領域にある、次の命令にジャンプすることになる。
 
-```
+```Assembly
 findactive:
 	testb	dl, dl
 	jns	nextdisk		! No bootable partitions on floppies
@@ -95,7 +95,7 @@ findactive:
 BIOSは起動時にDLレジスタに起動ドライブの番号を設定する。0x00と0x01は1台目と2台目のフロッピードライブに対応し、0x80、0x81、0x82、0x83はハードディスクドライブ1~4に対応する。
 testbはdl自身のビット単位の論理積をとり、signフラグを変更(負の場合に1)します。負でない場合(つまりフロッピードライブ)の場合、nextdiskへジャンプする。
 
-```
+```Assembly
 	mov	si, #BUFFER+PART_TABLE
 find:	cmpb	sysind(si), #0		! Partition type, nonzero when in use
 	jz	nextpart
@@ -108,7 +108,7 @@ si+sysindの値が0の場合、もしくはsi+bootindの7ビット目が立っ�
 
 パーティションテーブルのエントリの構造は以下のようになっています。
 
-```Unix Assembly
+```Assembly
 	! <ibm/partition>.h:
 	bootind	   =	     0
 	sysind	   =	     4
@@ -118,7 +118,7 @@ si+sysindの値が0の場合、もしくはsi+bootindの7ビット目が立っ�
 ![](./partition_table_entry.drawio.png)
 
 
-```
+```Assembly
 loadpart:
 	call	load			! Load partition bootstrap
 	jc	error1			! Not supposed to fail
@@ -128,7 +128,7 @@ bootstrap:
 
 loadを呼び出して、アクティブパーティションの最初のセクタを読み込みます。
 
-```
+```Assembly
 load:
 	mov	di, #3		! Three retries for floppy spinup
 retry:	push	dx		! Save drive code
@@ -143,7 +143,7 @@ retry:	push	dx		! Save drive code
 [ah=0x08にセットしてint 0x13を呼び出す](https://en.wikipedia.org/wiki/INT_13H#INT_13h_AH=08h:_Read_Drive_Parameters)と、dlに指定したドライブのパラメータを返す。
 バグのあるBIOSは、ES:DIを0x0000:0x0000にセットしてしまうので、es, diを予めスタックに退避して、呼び出し後に復元する。
 
-```
+```Assembly
 	andb	cl, #0x3F	! cl = max sector number (1-origin)
 	incb	dh		! dh = 1 + max head number (0-origin)
 	movb	al, cl		! al = cl = sectors per track
@@ -173,7 +173,7 @@ dxの値で、開始位置が8GBを超えていないかをチェックして、
 
 
 
-```
+```Assembly
 	div	bx		! ax = cylinder, dx = sector within cylinder
 	xchg	ax, dx		! ax = sector within cylinder, dx = cylinder
 	movb	ch, dl		! ch = low 8 bits of cylinder
@@ -215,14 +215,14 @@ dxの値で、開始位置が8GBを超えていないかをチェックして、
 
 (bigdisk:は省略)
 
-```
+```Assembly
 rdeval:
 	jnc	rdok		! Read succeeded
 ```
 
 エラーがなければCFフラグはクリアされてるので、エラーがなければrdokへジャンプ
 
-```
+```Assembly
 rdok:	cmp	LOADOFF+MAGIC, #0xAA55
 	jne	nosig		! Error if signature wrong
 	ret			! Return with carry still clear
@@ -236,7 +236,7 @@ rdok:	cmp	LOADOFF+MAGIC, #0xAA55
 
 このコードがハードドライブから始まり、マスターブートコードがこのコードを読み込んだ場合は、ブートパーティションに対応するパーティションテーブルエントリがes:siに渡される。
 
-```
+```Assembly
 boot:
 	xor	ax, ax		! ax = 0x0000, the vector segment
 	mov	ds, ax
@@ -248,7 +248,7 @@ boot:
 
 (masterboot.sと同様に)axレジスタを0にセットし、ds, ssも0に設定する。スタックは#LOADOFFより下位に配置される。(コードよりも下位アドレスってのはちょっと馴染みがない)
 
-```
+```Assembly
 	push	ax
 	push	ax		! Push a zero lowsec(bp)
 
@@ -258,7 +258,7 @@ boot:
 
 6バイト分だけスタック領域を確保して、変数(bp)によるアドレスでアクセスできるようにしている。用途は以下の通り。
 
-```
+```Assembly
 	! Variables addressed using bp register
 	device	   =	     0	! The boot device
 	lowsec	   =	     2	! Offset of boot partition within drive
@@ -267,27 +267,27 @@ boot:
 
 全部で8バイト必要なのだが、6バイトしか確保しなかったので、最初の命令`xor	ax, ax`のコードが上書きされてしまう。だが、この命令は二度と実行されないので問題にはならない。まだコードセクションとかを指定していないので、コード領域に書き込んでもエラーにならない。
 
-```
+```Assembly
 	push	es
 	push	si		! es:si = partition table entry if hard disk
 ```
 
 masterboot.sで設定されたパーティションテーブルのエントリのアドレスを退避。
 
-```
+```Assembly
 	mov	di, #LOADOFF+sectors	! char *di = sectors;
 ```
 
 diレジスタに、sectorデータ用のポインタをセット。(ハードディスク起動の場合、参照先のデータは後で書き換えられる)
 
-```
+```Assembly
 	testb	dl, dl		! Winchester disks if dl >= 0x80
 	jge	floppy
 ```
 
 masterboot.sと同様にフロッピーからの起動かをチェックして分岐。
 
-```
+```Assembly
 winchester:
 
 ! Get the offset of the first sector of the boot partition from the partition
@@ -306,7 +306,7 @@ winchester:
 ![](./copy_startsector.drawio.png)
 
 
-```
+```Assembly
 	movb	ah, #0x08	! Code for drive parameters
 	int	0x13		! dl still contains drive
 	andb	cl, #0x3F	! cl = max sector number (1-origin)
@@ -317,7 +317,7 @@ winchester:
 
 masterboot.sと同様にディスク情報を取得。
 
-```
+```Assembly
 loadboot:
 ! Load /boot from the boot device
 
@@ -328,7 +328,7 @@ loadboot:
 
 セクタ数/シリンダを計算し、secpcyl(bp)に保存
 
-```
+```Assembly
 	mov	ax, #BOOTSEG	! Segment to load /boot into
 	mov	es, ax
 	xor	bx, bx		! Load first sector at es:bx = BOOTSEG:0x0000
@@ -336,13 +336,13 @@ loadboot:
 
 bootプログラムの読み出し先を設定。
 
-```
+```Assembly
 	mov	si, #LOADOFF+addresses	! Start of the boot code addresses
 ```
 
 installbootユーティリティによって設定される値のアドレスをセット。
 
-```
+```Assembly
 load:
 	mov	ax, 1(si)	! Get next sector number: low 16 bits
 	movb	dl, 3(si)	! Bits 16-23 for your up to 8GB partition
@@ -351,7 +351,7 @@ load:
 
 bootプログラムはディスク上に分割して格納されている。addressesは、分割の単位毎にセクタ数(1バイト)、パーティション内での開始セクタ(3バイト)の4バイトのエントリがが作成される。ここでは、開始セクタをdx:axとして取得している。
 
-```
+```Assembly
 	add	ax, lowsec+0(bp)
 	adc	dx, lowsec+2(bp)! dx:ax = sector within drive
 	cmp	dx, #[1024*255*63-255]>>16  ! Near 8G limit?
@@ -360,7 +360,7 @@ bootプログラムはディスク上に分割して格納されている。addr
 
 lowsecの情報を使って、開始セクタをパーティション内からディスクの先頭する。(8GB以上の大容量ディスクのチェックもしている)
 
-```
+```Assembly
 	div	secpcyl(bp)	! ax = cylinder, dx = sector within cylinder
 	xchg	ax, dx		! ax = sector within cylinder, dx = cylinder
 	movb	ch, dl		! ch = low 8 bits of cylinder
@@ -382,7 +382,7 @@ lowsecの情報を使って、開始セクタをパーティション内から�
 
 int 13呼び出しのためのパラメータを計算。トラックの最後まで読み出す必要がない場合は、(si)のセクタ数文だけ読み出す。
 
-```
+```Assembly
 read:	push	ax		! Save al = sectors to read
 	movb	ah, #0x02	! Code for disk read (all registers in use now!)
 	int	0x13		! Call the BIOS for a read
@@ -405,7 +405,7 @@ rdeval:
 
 int 13呼び出しでディスクを読む。読み出した結果でaddressesを更新し、続きがあるならloadをループする。
 
-```
+```Assembly
 done:
 
 ! Call /boot, assuming a long a.out header (48 bytes).  The a.out header is
@@ -425,7 +425,7 @@ done:
 
 ## boothead.s
 
-```
+```Assembly
 	jmpf	boot, LOADSEG+3	! Set cs right (skipping long a.out header)
 	.space	11		! jmpf + 11 = 16 bytes
 	jmpf	boot, LOADSEG+2	! Set cs right (skipping short a.out header)
@@ -433,7 +433,7 @@ done:
 
 bootblock.sの最後で、`jmpf	BOOTOFF, BOOTSEG` によって、bootプログラムの0x30バイト目にジャンプしている。bootプログラムのヘッダ部分は、48バイト(0x30)、または、32バイト(0x20)の場合がある。48バイトのヘッダの場合は最初の`jmpf	boot, LOADSEG+3`へ、32バイトの場合は2つ目の`jmpf	boot, LOADSEG+2`に到達する。最終的には、`boot`ラベルへジャンプするようにしている。
 
-```
+```Assembly
 boot:
 	mov	ax, #LOADSEG
 	mov	ds, ax		! ds = header
@@ -441,7 +441,7 @@ boot:
 
 dsをヘッダの位置に設定する。
 
-```
+```Assembly
 	movb	al, a_flags
 	testb	al, #A_SEP	! Separate I&D?
 	jnz	sepID
@@ -449,7 +449,7 @@ dsをヘッダの位置に設定する。
 
 ヘッダ部のa_flagsを調べて条件分岐、MINIX 3のデフォルトはI&Dは分離されている。
 
-```
+```Assembly
 sepID:
 	mov	ax, a_total	! Total nontext memory usage
 	and	ax, #0xFFFE	! Round down to even
@@ -458,19 +458,19 @@ sepID:
 
 a_totalを2バイトアライメントをとる。a_totalはI&D分離時は(data + bss + heap + stack)のサイズ。
 
-```
+```Assembly
 	cli			! Ignore interrupts while stack in limbo
 ```
 
 sp, ssを設定する時は割込み禁止する。
 
-```
+```Assembly
 	mov	sp, ax		! Set sp at the top of all that
 ```
 
 スタックポインタ(sp)をメモリの最後尾に設定
 
-```
+```Assembly
 	mov	ax, a_text	! Determine offset of ds above cs
 	movb	cl, #4
 	shr	ax, cl
@@ -478,7 +478,7 @@ sp, ssを設定する時は割込み禁止する。
 
 a_textサイズをセグメントの単位に変換。
 
-```
+```Assembly
 	mov	cx, cs
 	add	ax, cx
 	mov	ds, ax		! ds = cs + text / 16
@@ -486,14 +486,14 @@ a_textサイズをセグメントの単位に変換。
 
 データセグメントの開始位置をテキストセグメントの後に設定
 
-```
+```Assembly
 	mov	ss, ax
 	sti			! Stack ok now
 ```
 
 スタックセグメントの開始位置をdsと同じにする。ssを設定し終わったので、割込みを許可する。
 
-```
+```Assembly
 	push	es		! Save es, we need it for the partition table
 	mov	es, ax
 	cld			! C compiler wants UP
@@ -510,7 +510,7 @@ a_textサイズをセグメントの単位に変換。
 
 esを退避してから、bssの初期化を行う。es:diからcxカウントだけax(=0)を代入している。
 
-```
+```Assembly
 ! Copy primary boot parameters to variables.  (Can do this now that bss is
 ! cleared and may be written into).
 	xorb	dh, dh
@@ -521,7 +521,7 @@ esを退避してから、bssの初期化を行う。es:diからcxカウント�
 
 起動パラメータをbssにコピー。
 
-```
+```Assembly
 ! Remember the current video mode for restoration on exit.
 	movb	ah, #0x0F	! Get current video mode
 	int	0x10
@@ -532,7 +532,7 @@ esを退避してから、bssの初期化を行う。es:diからcxカウント�
 
 現在のビデオモードを調べて保存。
 
-```
+```Assembly
 ! Give C code access to the code segment, data segment and the size of this
 ! process.
 	xor	ax, ax
@@ -560,7 +560,7 @@ esを退避してから、bssの初期化を行う。es:diからcxカウント�
 C言語のコードから、コードセグメント開始アドレス(_caddr)、データセグメント開始アドレス(_daddr)、プロセスのサイズ(_runsize)をアクセスできるようにする。
 boot.hにて、caddr、daddr、runsizeは定義されている。
 
-```
+```Assembly
 ! Determine available memory as a list of (base,size) pairs as follows:
 ! mem[0] = low memory, mem[1] = memory between 1M and 16M, mem[2] = memory
 ! above 16M.  Last two coalesced into mem[1] if adjacent.
@@ -607,7 +607,7 @@ int 0x15は、axレジスタに1MiBのアドレスからのメモリサイズを
 * mem[1]は、0x0010_0000(1MiB)から開始されるメモリのアドレスとサイズ
 * mem[2]は、0x0100_0000(16MiB)から開始されるメモリのアドレスと、64KiBのチャンク数
 
-```
+```Assembly
 ! Time to switch to a higher level language (not much higher)
 	call	_boot
 ```
@@ -897,7 +897,7 @@ addrはイメージファイルの読み込み先、limitは読み込み上限(�
 	patch_sizes();
 ```
 
-カーネル関連のサイズを修正する(パッチをあてる)。
+カーネルのデータ領域にプロセスのサイズのパッチをあてる。(TODO: どこで使っているのか調査する事)
 
 ```c
 	/* Minix. */
@@ -913,7 +913,7 @@ addrはイメージファイルの読み込み先、limitは読み込み上限(�
 
 ### _minix
 
-```
+```Assembly
 ! void minix(u32_t koff, u32_t kcs, u32_t kds,
 !				char *bootparams, size_t paramsize, u32_t aout);
 !	Call Minix.
@@ -924,7 +924,7 @@ _minix:
 
 引数を後で使うために、スタックの位置をbpへセット。
 
-```
+```Assembly
 	mov	dx, #0x03F2	! Floppy motor drive control bits
 	movb	al, #0x0C	! Bits 4-7 for floppy 0-3 are off
 	outb	dx		! Kill the motors
@@ -958,7 +958,7 @@ _minix:
    1. CR0のPEビットをセット
    2. セグメントレジスタの再設定
 
-```
+```Assembly
 ! Call Minix in 386 mode.
 minix386:
   cseg	mov	cs_real-2, cs	! Patch CS and DS into the instructions that
@@ -967,7 +967,7 @@ minix386:
 
 リアルモードに戻ったときのために現在のcs、dsの値で、OSが終了してリアルモードへ戻るコードを書き換える。書き換え先は以下のようになっている。
 
-```
+```Assembly
 	jmpf	cs_real, 0xDEAD	! Reload cs register
 cs_real:
 	mov	ax, #0xBEEF
@@ -977,20 +977,20 @@ ds_real:
 
 `0xDEAD`と`#0xBEEF`が書き換えられる事になる。「DEAD BEEF」の意味については[WikipediaのHexspeak](https://ja.wikipedia.org/wiki/Hexspeak)を参照。
 
-```
+```Assembly
 	.data1	0x0F,0x20,0xC0	! mov	eax, cr0
 ```
 
 `mov	eax, cr0`と直接書きたいのだが、cr0はアセンブラではサポートされていないので、機械語のコードを直接書いている。cr0は、CPUの制御レジスタ。
 
-```
+```Assembly
 	orb	al, #0x01	! Set PE (protection enable) bit
 	.data1	o32
 	mov	msw, ax		! Save as protected mode machine status word
 ```
 `#0x01`と論理和を取って、プロテクトモードを有効にした値を設定する。`mov	msw, ax`の頭に`o32`をつけると、`mov msw, eax`と解釈され、cr0の内容をmswに保存しておく(MINIX起動直前にcr0に設定する)。
 
-```
+```Assembly
 	mov	dx, ds		! Monitor ds
 	mov	ax, #p_gdt	! dx:ax = Global descriptor table
 	call	seg2abs
@@ -1000,14 +1000,14 @@ ds_real:
 
 ここからしばらくは、プロテクトモードのためにグローバルディスクリプタテーブルを設定する。設定先のメモリは以下のような初期状態になっていて、UNSETの部分がここで書き換えられる。
 
-```
+```Assembly
 p_gdt_desc:
 	! Descriptor for this descriptor table
 	.data2	8*8-1, UNSET
 	.data1	UNSET, 0x00, 0x00, 0x00
 ```
 
-```
+```Assembly
 	push	#MCS_SELECTOR
 	test	_k_flags, #K_INT86 ! Generic INT86 support?
 	jz	0f
@@ -1033,7 +1033,7 @@ p_gdt_desc:
 
 カーネルが呼ばれたときに期待しているスタックを作成している。
 
-```
+```Assembly
 	push	#0
 	push	#CS_SELECTOR
 	push	6(bp)
@@ -1042,18 +1042,18 @@ p_gdt_desc:
 
 の部分は、あとに出てくる以下のretfでpopされる事になる。(retfでリターンしているように見えるけど実際はここでセットしたカーネルのエントリポイントにジャンプしている)
 
-```
+```Assembly
 	.data1	o32		! Make a far call to the kernel
 	retf
 ```
 
-```
+```Assembly
 	call	real2prot	! Switch to protected mode
 ```
 
 リアルモードからプロテクトモードに移行する。 `real2prot`は後述。
 
-```
+```Assembly
 	mov	ax, #DS_SELECTOR ! Kernel data
 	mov	ds, ax
 	mov	ax, #ES_SELECTOR ! Flat 4 Gb
@@ -1062,7 +1062,7 @@ p_gdt_desc:
 
 カーネル用のセグメントを設定する。
 
-```
+```Assembly
 	.data1	o32		! Make a far call to the kernel
 	retf
 ```
@@ -1071,7 +1071,7 @@ p_gdt_desc:
 
 ### real2prot
 
-```
+```Assembly
 ! Switch from real to protected mode.
 real2prot:
 	movb	ah, #0x02	! Code for A20 enable
@@ -1080,13 +1080,13 @@ real2prot:
 
 `gate_A20`(後述)を呼び出して、20ビット以上のアドレスを有効にする。
 
-```
+```Assembly
 	lgdt	p_gdt_desc	! Global descriptor table
 ```
 
 グローバルディスクリプタ(GDT)のアドレスを、グローバルディスクリプタ・レジスタ(GDTR)に設定(ロード)する。
 
-```
+```Assembly
 	.data1	o32
 	mov	ax, pdbr	! Load page directory base register
 	.data1	0x0F,0x22,0xD8	! mov	cr3, eax
@@ -1094,7 +1094,7 @@ real2prot:
 
 ページング用のデータのベースアドレスをコントロールレジスタ`cr3`にセットする。
 
-```
+```Assembly
 	.data1	0x0F,0x20,0xC0	! mov	eax, cr0
 	.data1	o32
 	xchg	ax, msw		! Exchange real mode msw for protected mode msw
@@ -1103,14 +1103,14 @@ real2prot:
 
 前に作成した値でコントロールレジスタ`cr0`をセットしてプロテクトモード(32ビットモード)に移行する。
 
-```
+```Assembly
 	jmpf	cs_prot, MCS_SELECTOR ! Set code segment selector
 cs_prot:
 ```
 
 CPUのパイプライン処理で先読みされている命令をクリアするためにジャンプをする。(先読みされている命令はリアルモード(16ビットモード)の命令として解釈されてるので、ここ移行は改めて32ビット命令として取り込み直す)
 
-```
+```Assembly
 	mov	ax, #SS_SELECTOR ! Set data selectors
 	mov	ds, ax
 	mov	es, ax
@@ -1122,7 +1122,7 @@ CPUのパイプライン処理で先読みされている命令をクリアす�
 
 メモリ空間の制御なのに、キーボード・コントローラに信号を送っている。当時空いていたポートがキーボードコントローラにあったからというのが理由だそうである。
 
-```
+```Assembly
 ! Enable (ah = 0x02) or disable (ah = 0x00) the A20 address line.
 gate_A20:
 	cmp	bus, #2		! PS/2 bus?
