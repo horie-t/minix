@@ -1040,7 +1040,7 @@ p_gdt_desc:
 	push	4(bp)		! 32 bit far address to kernel entry point
 ```
 
-の部分は、あとに出てくる以下のretfでpopされる事になる。(retfでリターンしているように見えるけど実際はここでセットしたカーネルのエントリポイント(minix386.sのMINIX:)にジャンプしている)
+の部分は、あとに出てくる以下のretfでpopされる事になる。(retfでリターンしているように見えるけど実際はここでセットしたカーネルのエントリポイント(mpx386.sのMINIX:)にジャンプしている)
 
 ```Assembly
 	.data1	o32		! Make a far call to the kernel
